@@ -90,6 +90,51 @@ def move_streams(to, only_from=None):
         _pactl("move-sink-input", str(i["index"]), to)
 
 
+def get_volume(sink):
+    """'36%' (first channel) or None."""
+    r = _pactl("get-sink-volume", sink)
+    for word in r.stdout.split():
+        if word.endswith("%"):
+            return word
+    return None
+
+
+def set_volume(sink, vol):
+    if vol:
+        _pactl("set-sink-volume", sink, vol)
+
+
+# While the sound is delayed, the volume slider and keys move the TV Cast speaker, so the
+# real speakers sit at 100% and the TV Cast speaker carries your level. This file remembers
+# which speakers to give the level back to if TV Cast stops without cleaning up.
+VOLUME_FILE = os.path.expanduser("~/.cache/tv-cast/volume.json")
+
+
+def _save_volume_state(sink, vol):
+    try:
+        os.makedirs(os.path.dirname(VOLUME_FILE), exist_ok=True)
+        with open(VOLUME_FILE, "w") as f:
+            json.dump({"sink": sink, "volume": vol}, f)
+    except OSError:
+        pass
+
+
+def _give_volume_back(log=print):
+    """The level you had on the TV Cast speaker goes back onto the real speakers."""
+    try:
+        with open(VOLUME_FILE) as f:
+            st = json.load(f)
+        os.remove(VOLUME_FILE)
+    except (OSError, ValueError):
+        return
+    sink = st.get("sink")
+    if not sink or not _sink_exists(sink):
+        return
+    vol = get_volume(SINK) if _sink_exists(SINK) else None
+    set_volume(sink, vol or st.get("volume"))
+    log(f"Volume: {sink_label(sink)} back to {vol or st.get('volume')}")
+
+
 def _our_modules():
     mods = [line.split("\t") for line in _pactl("list", "short", "modules").stdout.splitlines()]
     return [m[0] for m in mods if len(m) > 2 and m[1] == "module-null-sink" and f"sink_name={SINK}" in m[2]]
@@ -101,7 +146,9 @@ def clean_up(log=print, back=None, why="left over from last time"):
         return
     mods = _our_modules()
     if not mods:
+        _give_volume_back(log)
         return
+    _give_volume_back(log)
     if not back or back.startswith("tvcast_") or not _sink_exists(back):
         back = real_sink()
     if default_sink().startswith("tvcast_"):
@@ -168,8 +215,22 @@ class DelayLine:
                 fcntl.fcntl(pipe.fileno(), F_SETPIPE_SZ, 4096)
             except OSError:
                 pass
+        threading.Thread(target=self._full_volume, name="tvcast-delay-volume", daemon=True).start()
         threading.Thread(target=self._read, name="tvcast-delay-in", daemon=True).start()
         threading.Thread(target=self._write, name="tvcast-delay-out", daemon=True).start()
+
+    def _full_volume(self):
+        """PipeWire may restore an old volume for "pw-play": the delayed sound must stay at 100%."""
+        for _ in range(20):
+            time.sleep(0.1)
+            try:
+                inputs = json.loads(_pactl("-f", "json", "list", "sink-inputs").stdout or "[]")
+            except ValueError:
+                continue
+            for i in inputs:
+                if (i.get("properties") or {}).get("node.name") == "tvcast_delay_out":
+                    _pactl("set-sink-input-volume", str(i["index"]), "100%")
+                    return
 
     def _bytes(self, ms):
         return self.RATE * max(0, ms - self.OVERHEAD_MS) // 1000 * self.FRAME
@@ -251,12 +312,16 @@ class SoundRoute:
             if _sink_exists(SINK):
                 break
             time.sleep(0.1)
+        level = get_volume(self.real)
+        set_volume(SINK, level)                 # the volume slider shows the level you had
         if delay_ms is not None:
             try:
                 self.delay = DelayLine(SINK, self.real, delay_ms, self.log)
             except OSError:
                 self.stop()
                 raise
+            _save_volume_state(self.real, level)
+            set_volume(self.real, "100%")       # the level is applied once, on the TV Cast speaker
         _pactl("set-default-sink", SINK)
         move_streams(SINK)
         # if TV Cast dies mid-cast, this puts the sound back by itself
@@ -281,6 +346,7 @@ class SoundRoute:
         if self.delay:
             self.delay.stop()
             self.delay = None
+        _give_volume_back(self.log)             # while the TV Cast speaker still has your level
         _pactl("unload-module", self.module)
         self.module = None
         clean_up(self.log, back, why="cast stopped")    # anything else of ours left: gone too
