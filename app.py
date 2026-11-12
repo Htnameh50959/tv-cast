@@ -151,9 +151,10 @@ class Window(Adw.ApplicationWindow):
         self.output.set_selected(next((i for i, x in enumerate(OUTPUTS) if x[1] == st.get("output")), 0))
         self.output.connect("notify::selected", lambda *_: save_settings(output=self._output()))
         sound.add(self.output)
-        self.delay_row = Adw.SpinRow.new_with_range(0, 15000, 50)
+        self.delay_row = Adw.SpinRow.new_with_range(-15000, 15000, 50)
         self.delay_row.set_title("Sound delay (ms)")
-        self.delay_row.set_subtitle(f"{MATCH_MS} = matches the TV picture · 0 = no delay")
+        self.delay_row.set_subtitle(f"{MATCH_MS} = matches the TV picture · 0 = no delay · "
+                                    "below 0: the TV picture waits longer, so the sound comes first")
         self.delay_row.set_value(st.get("delay_ms", MATCH_MS))
         self.delay_row.connect("notify::value", self._delay_changed)
         sound.add(self.delay_row)
@@ -306,16 +307,21 @@ class Window(Adw.ApplicationWindow):
         return OUTPUTS[self.output.get_selected()][1]
 
     def _delay_ms(self):
-        return int(self.delay_row.get_value())
+        """How late the sound plays; below 0 it can't, so the TV picture is held back longer instead."""
+        ms = int(self.delay_row.get_value())
+        if self.server:
+            self.server.picture_delay = netcast.DELAY + max(0, -ms) / 1000
+        return ms
 
     def _route_sound(self, mode):
-        out, ms = (self._output(), self._delay_ms()) if audio.available() else ("laptop", 0)
+        ms = self._delay_ms()
+        out, ms = (self._output(), ms) if audio.available() else ("laptop", 0)
         self.sound_mode = mode
         if out == "tv" and mode == "live":
             self.log("Sound: the TV can't play sound with the live picture — it plays on the laptop")
             out = "laptop"
         self.sound_out = out
-        if out == "laptop" and ms == 0:
+        if out == "laptop" and ms <= 0:
             return                       # normal: sound plays on the laptop as it is
         self.route = audio.SoundRoute(self.log)
         try:
@@ -334,6 +340,7 @@ class Window(Adw.ApplicationWindow):
         save_settings(delay_ms=ms)
         if self.phase != "casting" or not self.server:
             return
+        self.log(f"Picture: TV held {self.server.picture_delay:g} s behind the laptop")
         out = getattr(self, "sound_out", "laptop")
         if out == "tv":
             self.server.audio_delay_ms = ms          # the TV page picks it up and restarts the sound
@@ -342,7 +349,7 @@ class Window(Adw.ApplicationWindow):
             if self.route and self.route.delay and ms > 0:
                 self.route.delay.set_ms(ms)
                 self.log(f"Sound: delay {ms} ms")
-            elif self.route and ms == 0:
+            elif self.route and ms <= 0:
                 self.route.stop()
                 self.route = None
             elif not self.route and ms > 0:

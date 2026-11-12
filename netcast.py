@@ -272,11 +272,20 @@ function mse(){
   x.onload=function(){var t1=performance.now(),r;try{r=JSON.parse(x.responseText);}catch(e){return;}
    if(r.media!=null)moff=r.media;if(r.amedia!=null)amoff=r.amedia;
    if(r.ashift!=null){if(aoffSet&&Math.abs(r.ashift-ashift)>0.001){beacon('sound-delay-changed');location.reload();}ashift=r.ashift;}if(r.keys)keys=r.keys;
+   if(r.delay!=null&&Math.abs(r.delay-DELAY)>0.001)setDelay(r.delay);
    var rtt=t1-t0;best+=1;   // keep the quickest round trip (most exact); slowly allow fresher ones
    if(coff===null||rtt<=best){best=rtt;coff=r.now*1000-(t0+t1)/2;}
    if(cb)cb();};
   x.send();}
  for(var k=0;k<10;k++)setTimeout(sync,k*120);setInterval(sync,2000);
+ // The picture delay changed (a negative sound delay holds the picture longer): hold the
+ // picture once for the extra time, or jump ahead onto a keyframe for a shorter delay.
+ var holdUntil=0;
+ function setDelay(d){var old=DELAY;DELAY=d;beacon('delay-changed&to='+d);
+  if(!started)return;bad=0;tries=0;
+  if(d>old){holdUntil=performance.now()+(d-old)*1000;checkAt=holdUntil+1500;v.pause();
+   setTimeout(function(){v.play();},(d-old)*1000);}
+  else plan();}
  function lnow(){return (performance.now()+coff)/1000;}
  function err(){return lnow()-moff-v.currentTime-DELAY;}   // >0: picture too old
  function plan(){
@@ -308,6 +317,7 @@ function mse(){
    else v.play();
    started=true;hide();beacon('playing');
    checkAt=performance.now()+1500;return;}
+  if(performance.now()<holdUntil)return;
   if(v.paused)v.play();
   if(v.seeking||planned||performance.now()<checkAt)return;
   var e=err();
@@ -461,6 +471,7 @@ class CastServer:
         # sound for the TV (None = no sound sent): a PulseAudio/PipeWire source to record
         self.audio_device = None
         self.audio_delay_ms = round(DELAY * 1000)   # TV sound: how long after the laptop makes it
+        self.picture_delay = DELAY                  # seconds the TV picture is held back (more for a negative sound delay)
         self.apipe = None
         self.a_init = None
         self.a_buf = bytearray()
@@ -616,7 +627,7 @@ class CastServer:
     def audio_shift(self):
         """Seconds the TV sound plays after (+) or before (-) the matching picture.
         Sound can't come much earlier than the picture: it must have reached the TV already."""
-        return max(self.audio_delay_ms / 1000 - DELAY, -(DELAY - 0.5))
+        return max(self.audio_delay_ms / 1000 - self.picture_delay, -(self.picture_delay - 0.5))
 
     def _on_amp4(self, sink):
         buf = sink.emit("pull-sample").get_buffer()
@@ -817,7 +828,8 @@ class CastServer:
                         off = server.media_offset()
                         body = json.dumps({"now": time.time(), "media": off, "keys": list(server.key_times),
                                            "amedia": server.media_offset(server.audio_offsets),
-                                           "ashift": server.audio_shift()}).encode()
+                                           "ashift": server.audio_shift(),
+                                           "delay": server.picture_delay}).encode()
                         self._head("application/json", len(body))
                         self.wfile.write(body)
                     elif path == "/hello":
@@ -838,7 +850,7 @@ class CastServer:
                         while server.codec is None and time.time() - t0 < 10:
                             time.sleep(0.1)
                         body = (PAGE.replace("__CODEC__", server.codec or "avc1.640028").replace("__MODE__", server.mode)
-                                .replace("__DELAY__", str(DELAY))
+                                .replace("__DELAY__", str(server.picture_delay))
                                 .replace("__AUDIO__", "1" if server.apipe else "0")).encode()
                         self._head("text/html; charset=utf-8", len(body))
                         self.wfile.write(body)
