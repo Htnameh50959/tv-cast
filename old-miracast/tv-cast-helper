@@ -1,0 +1,203 @@
+#!/usr/bin/python3 -I
+"""TV Cast root helper: Wi-Fi Direct link where the TV is in charge.
+
+Usage: tv-cast-helper connect <TV MAC address>
+
+Prints one JSON object per line:
+  {"event": "searching"} {"event": "waiting_tv"} {"event": "linked", "ip": ..., "iface": ...}
+  {"event": "failed", "message": ...} {"event": "ended"}
+Keeps the link up until its standard input is closed, then removes it.
+Installed by setup.sh to /usr/local/sbin (root-owned) and allowed via sudoers.
+"""
+import json
+import os
+import re
+import select
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+CTRL_DIR = "/run/wpa_supplicant"
+WFD_SUBELEM = "000600901c4400c8"
+DHCP_SCRIPT = """#!/bin/sh
+case "$1" in
+  bound|renew)
+    ip addr flush dev "$interface"
+    ip addr add "$ip/${mask:-24}" dev "$interface"
+    echo "TVCAST_IP $ip"
+    ;;
+  deconfig)
+    ip addr flush dev "$interface"
+    ;;
+esac
+"""
+
+
+def out(**ev):
+    print(json.dumps(ev), flush=True)
+
+
+class Ctrl:
+    """Minimal wpa_supplicant control-socket client."""
+
+    def __init__(self, iface):
+        self.local = tempfile.mktemp(prefix="tvcast-", dir="/run")
+        self.s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.s.bind(self.local)
+        self.s.connect(os.path.join(CTRL_DIR, iface))
+
+    def cmd(self, text, timeout=10):
+        self.s.send(text.encode())
+        while True:
+            r, _, _ = select.select([self.s], [], [], timeout)
+            if not r:
+                return "TIMEOUT"
+            data = self.s.recv(8192).decode(errors="replace")
+            if not data.startswith("<"):       # skip unsolicited events
+                return data.strip()
+
+    def recv_event(self, timeout):
+        r, _, _ = select.select([self.s], [], [], timeout)
+        if not r:
+            return None
+        data = self.s.recv(8192).decode(errors="replace")
+        return re.sub(r"^<\d>", "", data).strip()
+
+    def close(self):
+        self.s.close()
+        try:
+            os.unlink(self.local)
+        except OSError:
+            pass
+
+
+def main():
+    if len(sys.argv) != 3 or sys.argv[1] != "connect":
+        sys.exit("usage: tv-cast-helper connect <mac>")
+    mac = sys.argv[2].lower()
+    if not re.fullmatch(r"([0-9a-f]{2}:){5}[0-9a-f]{2}", mac):
+        sys.exit("bad MAC address")
+
+    devs = [d for d in os.listdir(CTRL_DIR) if d.startswith("p2p-dev-")]
+    if not devs:
+        out(event="failed", message="No Wi-Fi Direct device found.")
+        return 1
+    p2p_dev = devs[0]
+
+    ctl = Ctrl(p2p_dev)
+    mon = Ctrl(p2p_dev)
+    mon.cmd("ATTACH")
+    group_if = None
+    dhcp = None
+    script = None
+
+    cleaned = []
+
+    def cleanup(*_):
+        if cleaned:
+            return
+        cleaned.append(True)
+        if dhcp and dhcp.poll() is None:
+            dhcp.terminate()
+        if group_if:
+            ctl.cmd(f"P2P_GROUP_REMOVE {group_if}")
+        if script:
+            os.unlink(script)
+        mon.cmd("DETACH")
+        ctl.close()
+        mon.close()
+
+    signal.signal(signal.SIGTERM, lambda *a: (cleanup(), sys.exit(0)))
+
+    try:
+        ctl.cmd("SET wifi_display 1")
+        ctl.cmd(f"WFD_SUBELEM_SET 0 {WFD_SUBELEM}")
+
+        # 1. make sure we can see the TV
+        out(event="searching")
+        ctl.cmd("P2P_FIND 30")
+        deadline = time.time() + 30
+        while not ctl.cmd(f"P2P_PEER {mac}").lower().startswith(mac):
+            if time.time() > deadline:
+                out(event="failed", message="The TV was not found. Is Screen Share open on the TV?")
+                return 1
+            mon.recv_event(1)
+        ctl.cmd("P2P_STOP_FIND")
+
+        # 2. ask the TV to connect, with the TV in charge (go_intent=0)
+        r = ctl.cmd(f"P2P_CONNECT {mac} pbc go_intent=0", timeout=15)
+        if r.startswith("FAIL"):
+            out(event="failed", message=f"The Wi-Fi card refused the request ({r}).")
+            return 1
+        out(event="waiting_tv")
+        deadline = time.time() + 60
+        role = None
+        while time.time() < deadline:
+            ev = mon.recv_event(1)
+            if not ev:
+                continue
+            if ev.startswith("P2P-GO-NEG-FAILURE"):
+                out(event="failed", message="The TV refused the connection.")
+                return 1
+            if ev.startswith("P2P-GROUP-FORMATION-FAILURE"):
+                out(event="failed", message="The TV did not finish connecting.")
+                return 1
+            if ev.startswith("P2P-GROUP-STARTED"):
+                parts = ev.split()
+                group_if, role = parts[1], parts[2]
+                break
+        else:
+            out(event="failed", message="The TV did not answer in time. Press OK on the TV when it asks.")
+            return 1
+
+        subprocess.run(["nmcli", "device", "set", group_if, "managed", "no"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        if role != "client":
+            out(event="failed", message="The TV insisted that the laptop be in charge. "
+                                        "Use normal mode for this TV.")
+            return 1
+
+        # 3. get an address from the TV (no default route, so internet stays on Wi-Fi)
+        fd, script = tempfile.mkstemp(prefix="tvcast-dhcp-", dir="/run")
+        os.write(fd, DHCP_SCRIPT.encode())
+        os.close(fd)
+        os.chmod(script, 0o700)
+        dhcp = subprocess.Popen(["busybox", "udhcpc", "-f", "-i", group_if, "-s", script,
+                                 "-t", "8", "-T", "2", "-n"],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        ip = None
+        deadline = time.time() + 25
+        while time.time() < deadline and dhcp.poll() is None:
+            r, _, _ = select.select([dhcp.stdout], [], [], 1)
+            if r:
+                line = dhcp.stdout.readline()
+                if line.startswith("TVCAST_IP"):
+                    ip = line.split()[1]
+                    break
+        if not ip:
+            out(event="failed", message="Connected, but the TV did not give the laptop an address.")
+            return 1
+        out(event="linked", ip=ip, iface=group_if)
+
+        # 4. hold the link until the app closes our stdin, or the TV leaves
+        while True:
+            r, _, _ = select.select([sys.stdin, mon.s], [], [], 5)
+            if sys.stdin in r and not sys.stdin.readline():
+                break
+            if mon.s in r:
+                ev = mon.recv_event(0)
+                if ev and ev.startswith("P2P-GROUP-REMOVED"):
+                    group_if = None
+                    out(event="ended")
+                    break
+        return 0
+    finally:
+        cleanup()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
