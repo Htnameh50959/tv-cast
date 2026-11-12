@@ -262,7 +262,10 @@ function mse(){
  // So we jump only ONTO a keyframe, started SEEK seconds early (the time the TV needs for a
  // jump, learned and remembered), then play normally: the delay stays put with no more jumps.
  // with sound the TV moves in whole frames (~34 ms) and jumps take longer: own tolerance and memory
- var SKEY=AUDIO?'tvcast-seek-sound':'tvcast-seek',TOL=AUDIO?0.04:0.02,TRIM=AUDIO?0.02:0.008;
+ // A trim (short pause) always moves the picture a whole frame (~33 ms) on this TV, so trim only
+ // when that brings it closer to 2 s (more than half a frame too new). Otherwise a 10 ms trim
+ // overshoots past TOL and triggers a jump (a visible ~0.3 s freeze) every few seconds.
+ var SKEY=AUDIO?'tvcast-seek-sound':'tvcast-seek',TOL=AUDIO?0.04:0.03,TRIM=AUDIO?0.02:0.017;
  var SEEK=AUDIO?0.55:0.3;try{SEEK=parseFloat(localStorage.getItem(SKEY))||SEEK;}catch(e){}
  var planned=false,checkAt=0,justJumped=false,bad=0,tries=0,trimAt=0,trims=0;
  function sync(cb){var t0=performance.now(),x=new XMLHttpRequest();x.open('GET','/clock?'+Date.now());
@@ -313,8 +316,7 @@ function mse(){
    if(Math.abs(e)<0.6&&tries<=6){SEEK=Math.max(0,Math.min(1.5,SEEK+e));try{localStorage.setItem(SKEY,SEEK);}catch(x){}}
    if(Math.abs(e)>TOL&&tries<6){plan();return;}
    tries=0;}
-  // TV clock running a bit fast (picture getting too new): hold the current frame for a few ms,
-  // shorter than one frame, so it can't be seen
+  // TV clock running a bit fast (picture getting too new): hold the current frame briefly
   if(e<-TRIM&&e>-0.1&&performance.now()>trimAt){trimAt=performance.now()+1000;trims++;v.pause();
    setTimeout(function(){v.play();},-e*1000);return;}
   // off by more than TOL for 3 s (e.g. Wi-Fi stall): one exact jump to fix it
