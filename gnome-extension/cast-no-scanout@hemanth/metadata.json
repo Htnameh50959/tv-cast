@@ -1,0 +1,7 @@
+{
+  "uuid": "cast-no-scanout@hemanth",
+  "name": "Cast: No Direct Scanout",
+  "description": "While the screen is being shared or cast, stops GNOME from showing full-screen videos straight on the display (direct scanout), which makes casts and screen shares freeze on a stale picture.",
+  "shell-version": ["46", "47", "48"],
+  "version": 1
+}
