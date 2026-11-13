@@ -902,7 +902,10 @@ class CastServer:
                 if c in self.clients:
                     self.clients.remove(c)
             self.log(f"TV {ip} stopped receiving video")
-            self.on_event("tv_left", ip)
+            with self.lock:
+                others = len(self.clients)
+            if not others:      # another viewer (or the TV itself) is still watching
+                self.on_event("tv_left", ip)
 
     def _serve_frame(self, h, ip, q):
         args = dict(kv.split("=", 1) for kv in q.split("&") if "=" in kv)
@@ -956,7 +959,8 @@ class CastServer:
                     self.jpeg_sent += 1
         finally:
             self._set_mjpeg(-1)
-            self.on_event("tv_left", ip)
+            if not self.mjpeg_clients:
+                self.on_event("tv_left", ip)
 
     def url_for(self, tv_ip):
         return f"http://{local_ip_towards(tv_ip)}:{PORT}/"

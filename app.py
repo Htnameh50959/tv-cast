@@ -27,7 +27,7 @@ QUALITIES = [
     ("Smooth video 1080p — exactly 2 s behind, may stutter", 1920, 1080, 30, 10000, "video"),
 ]
 
-OUTPUTS = [("Laptop speakers", "laptop"), ("TV speakers", "tv")]
+OUTPUTS = [("Laptop speakers", "laptop"), ("TV speakers", "tv"), ("Bluetooth", "bluetooth")]
 MATCH_MS = round(netcast.DELAY * 1000)          # sound delay that matches the TV picture
 SETTINGS_FILE = os.path.expanduser("~/.config/tv-cast/settings.json")
 
@@ -147,10 +147,19 @@ class Window(Adw.ApplicationWindow):
         st = load_settings()
         sound = Adw.PreferencesGroup(title="Sound", sensitive=audio.available(),
                                      description=None if audio.available() else "Needs pactl, pw-record and pw-play")
-        self.output = Adw.ComboRow(title="Sound plays on", model=Gtk.StringList.new([x[0] for x in OUTPUTS]))
-        self.output.set_selected(next((i for i, x in enumerate(OUTPUTS) if x[1] == st.get("output")), 0))
-        self.output.connect("notify::selected", lambda *_: save_settings(output=self._output()))
+        self.outputs = OUTPUTS
+        self.bluetooth_devices = audio.bluetooth_sinks()
+        self.output = Adw.ComboRow(title="Sound plays on", model=Gtk.StringList.new([x[0] for x in self.outputs]))
+        self.output.set_selected(self._output_index(st.get("output")))
         sound.add(self.output)
+        self.bluetooth_output = Adw.ComboRow(title="Bluetooth device",
+                                             model=Gtk.StringList.new(self._bluetooth_names()))
+        self.bluetooth_output.set_selected(self._bluetooth_index(st.get("output")))
+        self.bluetooth_output.set_sensitive(bool(self.bluetooth_devices))
+        self.bluetooth_output.set_visible(self._output_kind() == "bluetooth")
+        self.output.connect("notify::selected", self._output_changed)
+        self.bluetooth_output.connect("notify::selected", self._bluetooth_changed)
+        sound.add(self.bluetooth_output)
         self.delay_row = Adw.SpinRow.new_with_range(-15000, 15000, 50)
         self.delay_row.set_title("Sound delay (ms)")
         self.delay_row.set_subtitle(f"{MATCH_MS} = matches the TV picture · 0 = no delay · "
@@ -218,6 +227,7 @@ class Window(Adw.ApplicationWindow):
     def scan(self):
         if self.scanning:
             return
+        self._refresh_bluetooth_devices()
         self.scanning = True
         self.searching_row.set_title("Searching…")
         self.search_spin.set_spinning(True)
@@ -275,6 +285,7 @@ class Window(Adw.ApplicationWindow):
         self.tv_group.set_sensitive(False)
         self.opts_group.set_sensitive(False)
         self.output.set_sensitive(False)
+        self.bluetooth_output.set_sensitive(False)
         self.refresh_btn.set_sensitive(False)
         self.log(f"--- Casting to {tv['name']} ({tv['ip']})")
         self.steps[0].set(ACTIVE, "If GNOME asks, choose your screen and click Share.")
@@ -303,8 +314,53 @@ class Window(Adw.ApplicationWindow):
         self.remote = netcast.LGRemote(self.tv["ip"], self.log, lambda: GLib.idle_add(self._prompted))
         threading.Thread(target=self._open_on_tv, args=(url,), daemon=True).start()
 
+    def _output_kind(self):
+        selected = self.output.get_selected()
+        return self.outputs[selected][1] if selected < len(self.outputs) else "laptop"
+
     def _output(self):
-        return OUTPUTS[self.output.get_selected()][1]
+        """The selected destination, including a concrete Bluetooth sink."""
+        output = self._output_kind()
+        selected = self.bluetooth_output.get_selected()
+        if output == "bluetooth" and selected < len(self.bluetooth_devices):
+            return f"sink:{self.bluetooth_devices[selected][0]}"
+        return output
+
+    def _output_index(self, output):
+        if isinstance(output, str) and output.startswith("sink:"):
+            return next(i for i, choice in enumerate(self.outputs) if choice[1] == "bluetooth")
+        return next((i for i, choice in enumerate(self.outputs) if choice[1] == output), 0)
+
+    def _bluetooth_names(self):
+        return [label for _name, label in self.bluetooth_devices] or ["No Bluetooth devices connected"]
+
+    def _bluetooth_index(self, output):
+        if not self.bluetooth_devices:
+            return 0
+        name = output.removeprefix("sink:") if isinstance(output, str) else ""
+        return next((i for i, device in enumerate(self.bluetooth_devices) if device[0] == name), 0)
+
+    def _output_changed(self, *_):
+        self.bluetooth_output.set_visible(self._output_kind() == "bluetooth")
+        save_settings(output=self._output())
+
+    def _bluetooth_changed(self, *_):
+        if self._output_kind() == "bluetooth":
+            save_settings(output=self._output())
+
+    def _refresh_bluetooth_devices(self):
+        """Refresh the device sub-menu after a Bluetooth device changes state."""
+        if not hasattr(self, "bluetooth_output"):
+            return
+        current = self._output()
+        self.bluetooth_devices = audio.bluetooth_sinks()
+        self.bluetooth_output.set_model(Gtk.StringList.new(self._bluetooth_names()))
+        self.bluetooth_output.set_selected(self._bluetooth_index(current))
+        self.bluetooth_output.set_sensitive(bool(self.bluetooth_devices) and self.phase == "idle")
+
+    @staticmethod
+    def _selected_sink(output):
+        return output.removeprefix("sink:") if output.startswith("sink:") else None
 
     def _delay_ms(self):
         """How late the sound plays; below 0 it can't, so the TV picture is held back longer instead."""
@@ -317,6 +373,9 @@ class Window(Adw.ApplicationWindow):
         ms = self._delay_ms()
         out, ms = (self._output(), ms) if audio.available() else ("laptop", 0)
         self.sound_mode = mode
+        if out == "bluetooth":
+            self.log("Sound: no Bluetooth device is connected — it plays on the laptop")
+            out = "laptop"
         if out == "tv" and mode == "live":
             self.log("Sound: the TV can't play sound with the live picture — it plays on the laptop")
             out = "laptop"
@@ -325,7 +384,7 @@ class Window(Adw.ApplicationWindow):
             return                       # normal: sound plays on the laptop as it is
         self.route = audio.SoundRoute(self.log)
         try:
-            self.route.start(None if out == "tv" else ms)
+            self.route.start(None if out == "tv" else ms, self._selected_sink(out))
         except (OSError, audio.subprocess.SubprocessError) as e:
             self.log(f"Sound: {e} — it stays on the laptop")
             self.route = None
@@ -346,15 +405,15 @@ class Window(Adw.ApplicationWindow):
             self.server.audio_delay_ms = ms          # the TV page picks it up and restarts the sound
             return
         try:
-            if self.route and self.route.delay and ms > 0:
+            if self.route and self.route.delay and (ms > 0 or self._selected_sink(out)):
                 self.route.delay.set_ms(ms)
-                self.log(f"Sound: delay {ms} ms")
-            elif self.route and ms <= 0:
+                self.log(f"Sound: delay {ms} ms" if ms > 0 else "Sound: no extra delay")
+            elif self.route and ms <= 0 and not self._selected_sink(out):
                 self.route.stop()
                 self.route = None
-            elif not self.route and ms > 0:
+            elif not self.route and (ms > 0 or self._selected_sink(out)):
                 self.route = audio.SoundRoute(self.log)
-                self.route.start(ms)
+                self.route.start(ms, self._selected_sink(out))
         except (OSError, audio.subprocess.SubprocessError) as e:
             self.log(f"Sound: {e}")
 
@@ -495,6 +554,7 @@ class Window(Adw.ApplicationWindow):
         self.tv_group.set_sensitive(True)
         self.opts_group.set_sensitive(True)
         self.output.set_sensitive(True)
+        self.bluetooth_output.set_sensitive(bool(self.bluetooth_devices))
         self.refresh_btn.set_sensitive(True)
         self.say(message)
         self.log("--- " + message.replace("\n", " "))
