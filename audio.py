@@ -27,7 +27,9 @@ def _pactl(*args):
 
 
 def available():
-    return all(shutil.which(x) for x in ("pactl", "pw-record", "pw-play"))
+    # PipeWire exposes the virtual sink through its PulseAudio compatibility
+    # service.  Its native tools cannot target Pulse sink names reliably.
+    return all(shutil.which(x) for x in ("pactl", "parec", "pacat"))
 
 
 def _sinks():
@@ -75,6 +77,31 @@ def sink_label(name):
     return "Speakers"
 
 
+def bluetooth_sinks():
+    """Connected Bluetooth playback sinks as ``(name, display name)`` pairs.
+
+    PipeWire exposes a Bluetooth device as a normal PulseAudio sink while it is
+    connected (including when it is idle/suspended).  Accept the identifiers
+    used by both PipeWire and PulseAudio, rather than relying on a particular
+    desktop environment's Bluetooth service.
+    """
+    if not shutil.which("pactl"):
+        return []
+    found = []
+    for sink in _sinks():
+        name = sink.get("name", "")
+        props = sink.get("properties") or {}
+        is_bluetooth = (
+            name.startswith("bluez_output.")
+            or props.get("device.bus") == "bluetooth"
+            or props.get("device.api") in ("bluez5", "bluez")
+        )
+        if is_bluetooth and name and not name.startswith(PREFIXES):
+            label = props.get("device.description") or sink.get("description") or name
+            found.append((name, label))
+    return found
+
+
 def move_streams(to, only_from=None):
     """Move apps' sound to `to` (our own delay output and PhoneLink's stay where they are)."""
     try:
@@ -83,7 +110,12 @@ def move_streams(to, only_from=None):
         return
     sink_id = {x.get("name"): str(x.get("index")) for x in _sinks()}
     for i in inputs:
-        if (i.get("properties") or {}).get("node.name", "").startswith(PREFIXES):
+        props = i.get("properties") or {}
+        # pw-play identifies its stream with ``node.name``; pacat uses
+        # ``application.name``.  Never move the delay output back into the
+        # virtual sink, or it can no longer reach the physical speakers.
+        if (props.get("node.name", "").startswith(PREFIXES)
+                or props.get("application.name", "").startswith(PREFIXES)):
             continue
         if only_from and str(i.get("sink")) != sink_id.get(only_from):
             continue
@@ -160,7 +192,10 @@ def clean_up(log=print, back=None, why="left over from last time"):
         inputs = []
     ours = {str(x.get("index")) for x in _sinks() if x.get("name", "").startswith("tvcast_")}
     for i in inputs:
-        if str(i.get("sink")) in ours and not (i.get("properties") or {}).get("node.name", "").startswith(PREFIXES):
+        props = i.get("properties") or {}
+        if (str(i.get("sink")) in ours
+                and not props.get("node.name", "").startswith(PREFIXES)
+                and not props.get("application.name", "").startswith(PREFIXES)):
             _pactl("move-sink-input", str(i["index"]), back)
     for m in mods:
         _pactl("unload-module", m)
@@ -201,14 +236,15 @@ class DelayLine:
         self.ms = ms
         self.fifo = bytearray(self._bytes(ms))
         self.stopped = False
-        fmt = ["--rate", str(self.RATE), "--channels", str(self.CHANNELS), "--format", "s16"]
+        fmt = ["--rate", str(self.RATE), "--channels", str(self.CHANNELS), "--format", "s16le"]
         self.rec = subprocess.Popen(
-            ["pw-record", "-P", "{ stream.capture.sink=true node.name=tvcast_delay_in }",
-             "--target", source_sink, *fmt, "-"],
+            ["parec", "--raw", "--device", source_sink + ".monitor", *fmt,
+             "--latency-msec", "20", "--process-time-msec", "20"],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self.play = subprocess.Popen(
-            ["pw-play", "-P", "{ node.name=tvcast_delay_out node.dont-reconnect=true }", "--latency", "20ms",
-             "--target", real, *fmt, "-"],
+            ["pacat", "--raw", "--device", real, *fmt,
+             "--latency-msec", "20", "--process-time-msec", "20",
+             "--property=application.name=tvcast_delay_out"],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for pipe in (self.rec.stdout, self.play.stdin):
             try:  # small pipes: what sits in them is delay we don't control
@@ -220,7 +256,7 @@ class DelayLine:
         threading.Thread(target=self._write, name="tvcast-delay-out", daemon=True).start()
 
     def _full_volume(self):
-        """PipeWire may restore an old volume for "pw-play": the delayed sound must stay at 100%."""
+        """The delayed playback stream must stay at 100%."""
         for _ in range(20):
             time.sleep(0.1)
             try:
@@ -228,9 +264,28 @@ class DelayLine:
             except ValueError:
                 continue
             for i in inputs:
-                if (i.get("properties") or {}).get("node.name") == "tvcast_delay_out":
+                if (i.get("properties") or {}).get("application.name") == "tvcast_delay_out":
                     _pactl("set-sink-input-volume", str(i["index"]), "100%")
                     return
+
+    def move_output_to(self, sink):
+        """Pin pacat to the physical sink after PipeWire registers its stream.
+
+        PipeWire's stream-restore rule can otherwise place a newly created
+        pacat stream on the just-selected TV Cast default sink, even though
+        pacat was launched with ``--device``.
+        """
+        for _ in range(20):
+            try:
+                inputs = json.loads(_pactl("-f", "json", "list", "sink-inputs").stdout or "[]")
+            except ValueError:
+                inputs = []
+            for i in inputs:
+                if (i.get("properties") or {}).get("application.name") == "tvcast_delay_out":
+                    _pactl("move-sink-input", str(i["index"]), sink)
+                    return True
+            time.sleep(0.1)
+        return False
 
     def _bytes(self, ms):
         return self.RATE * max(0, ms - self.OVERHEAD_MS) // 1000 * self.FRAME
@@ -298,13 +353,25 @@ class SoundRoute:
         self.real = None
         self.delay = None
 
-    def start(self, delay_ms=None):
-        """delay_ms=None: sound only goes to the TV (laptop silent). Otherwise laptop, delay_ms later."""
+    def start(self, delay_ms=None, output_sink=None):
+        """Route sound to a selected physical sink, optionally delayed.
+
+        ``delay_ms=None`` means sound only goes to the TV; otherwise it plays
+        on ``output_sink`` (or the current laptop output) that many milliseconds
+        later.
+        """
         clean_up(self.log)                       # never two TV Cast speakers
-        self.before, self.real = default_sink(), real_sink()
-        label = sink_label(self.real).replace('"', "'")
-        r = _pactl("load-module", "module-null-sink", f"sink_name={SINK}",
-                   f'sink_properties=device.description="{label} (TV Cast)"')
+        self.before = default_sink()
+        if output_sink and (output_sink.startswith(PREFIXES) or not _sink_exists(output_sink)):
+            raise OSError("the selected sound device is no longer connected")
+        self.real = output_sink or real_sink()
+        label = sink_label(self.real)
+        # PipeWire's PulseAudio server accepts the null sink, but rejects a
+        # ``device.description`` value containing spaces.  This speaker is an
+        # internal route (and is filtered from the picker), so leave its
+        # display name at PipeWire's default instead of risking all sound
+        # routing failing to start.
+        r = _pactl("load-module", "module-null-sink", f"sink_name={SINK}")
         if not r.stdout.strip().isdigit():
             raise OSError(f"couldn't make the TV Cast speaker: {r.stderr.strip()}")
         self.module = r.stdout.strip()
@@ -324,6 +391,8 @@ class SoundRoute:
             set_volume(self.real, "100%")       # the level is applied once, on the TV Cast speaker
         _pactl("set-default-sink", SINK)
         move_streams(SINK)
+        if self.delay:
+            self.delay.move_output_to(self.real)
         # if TV Cast dies mid-cast, this puts the sound back by itself
         self.watcher = subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "--watch", str(os.getpid())],
                                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
