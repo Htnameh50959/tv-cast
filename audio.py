@@ -26,6 +26,24 @@ def _pactl(*args):
     return subprocess.run(["pactl", *args], capture_output=True, text=True, timeout=5)
 
 
+def _set_system_default(sink):
+    """Make WirePlumber's persistent default agree with PulseAudio's sink."""
+    if not sink or sink.startswith(PREFIXES) or not shutil.which("wpctl"):
+        return
+    try:
+        status = subprocess.run(["wpctl", "status", "-n"], capture_output=True,
+                                text=True, timeout=5).stdout
+        needle = ". " + sink + " "
+        for line in status.splitlines():
+            if needle in line:
+                node_id = line.split(". ", 1)[0].split()[-1]
+                subprocess.run(["wpctl", "set-default", node_id], capture_output=True,
+                               text=True, timeout=5)
+                return
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def available():
     # PipeWire exposes the virtual sink through its PulseAudio compatibility
     # service.  Its native tools cannot target Pulse sink names reliably.
@@ -185,6 +203,7 @@ def clean_up(log=print, back=None, why="left over from last time"):
         back = real_sink()
     if default_sink().startswith("tvcast_"):
         _pactl("set-default-sink", back)
+        _set_system_default(back)
     # every app still on a TV Cast speaker goes back (there may be several with the same name)
     try:
         inputs = json.loads(_pactl("-f", "json", "list", "sink-inputs").stdout or "[]")
@@ -419,6 +438,7 @@ class SoundRoute:
         _pactl("unload-module", self.module)
         self.module = None
         clean_up(self.log, back, why="cast stopped")    # anything else of ours left: gone too
+        _set_system_default(back)
         self.log(f"Sound: back on {sink_label(back)}, no delay")
 
 
