@@ -1,2 +1,12 @@
 __pycache__/
 *.bak-*
+*.pyc
+.pytest_cache/
+.venv/
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+*.iml
+.idea/
