@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TV Cast</string>
+    <string name="status_idle">Turn the TV on. It shows up below when it is on the same Wi-Fi.</string>
+    <string name="cast">Cast</string>
+    <string name="stop">Stop casting</string>
+    <string name="searching">Searching…</string>
+    <string name="refreshing">Search again</string>
+    <string name="quality_title">Picture quality</string>
+    <string name="hint">Tip: press OK on the TV remote once for full screen. The picture is live, about a second behind this device. Sound stays on this device.</string>
+    <string name="tv_prompt">Press OK on the TV remote.</string>
+    <string name="notification_channel">Casting</string>
+    <string name="notification_title">Casting to the TV</string>
+    <string name="notification_text">Your screen is being sent to the TV</string>
+</resources>

@@ -1,0 +1,79 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="local.hemanth.tvcast"
+4    android:versionCode="1"
+5    android:versionName="1.0" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="26"
+9        android:targetSdkVersion="35" />
+10
+11    <uses-permission android:name="android.permission.INTERNET" />
+11-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:4:5-67
+11-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:4:22-64
+12    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+12-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:5:5-79
+12-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:5:22-76
+13    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+13-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:6:5-76
+13-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:6:22-73
+14    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+14-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:7:5-86
+14-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:7:22-83
+15    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+15-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:8:5-77
+15-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:8:22-74
+16    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+16-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:9:5-94
+16-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:9:22-91
+17    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+17-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:10:5-77
+17-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:10:22-74
+18
+19    <application
+19-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:12:5-34:19
+20        android:allowBackup="false"
+20-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:13:9-36
+21        android:debuggable="true"
+22        android:extractNativeLibs="false"
+23        android:icon="@drawable/ic_cast"
+23-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:14:9-41
+24        android:label="@string/app_name"
+24-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:15:9-41
+25        android:supportsRtl="true"
+25-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:16:9-35
+26        android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
+26-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:18:9-77
+27        android:usesCleartextTraffic="true" >
+27-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:17:9-44
+28        <activity
+28-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:20:9-28:20
+29            android:name="local.hemanth.tvcast.MainActivity"
+29-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:21:13-41
+30            android:exported="true"
+30-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:22:13-36
+31            android:label="@string/app_name" >
+31-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:23:13-45
+32            <intent-filter>
+32-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:24:13-27:29
+33                <action android:name="android.intent.action.MAIN" />
+33-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:25:17-69
+33-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:25:25-66
+34
+35                <category android:name="android.intent.category.LAUNCHER" />
+35-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:26:17-77
+35-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:26:27-74
+36            </intent-filter>
+37        </activity>
+38
+39        <service
+39-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:30:9-33:63
+40            android:name="local.hemanth.tvcast.CastService"
+40-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:31:13-40
+41            android:exported="false"
+41-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:32:13-37
+42            android:foregroundServiceType="mediaProjection" />
+42-->/home/hemanth/Documents/projests/tv-cast/android/app/src/main/AndroidManifest.xml:33:13-60
+43    </application>
+44
+45</manifest>

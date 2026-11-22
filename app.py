@@ -143,10 +143,12 @@ class Window(Adw.ApplicationWindow):
         self.opts_group = opts
         box.append(opts)
 
-        # sound: where it plays, and how late (the delay can be changed while casting)
+        # sound: where it plays; the picture and sound stay a fixed 2 s behind the laptop
         st = load_settings()
-        sound = Adw.PreferencesGroup(title="Sound", sensitive=audio.available(),
-                                     description=None if audio.available() else "Needs pactl, pw-record and pw-play")
+        sound = Adw.PreferencesGroup(
+            title="Sound", sensitive=audio.available(),
+            description=(f"Sound and picture are both exactly {netcast.DELAY:g} s behind the laptop."
+                         if audio.available() else "Needs pactl, pw-record and pw-play"))
         self.outputs = OUTPUTS
         self.bluetooth_devices = audio.bluetooth_sinks()
         self.output = Adw.ComboRow(title="Sound plays on", model=Gtk.StringList.new([x[0] for x in self.outputs]))
@@ -160,13 +162,6 @@ class Window(Adw.ApplicationWindow):
         self.output.connect("notify::selected", self._output_changed)
         self.bluetooth_output.connect("notify::selected", self._bluetooth_changed)
         sound.add(self.bluetooth_output)
-        self.delay_row = Adw.SpinRow.new_with_range(-15000, 15000, 50)
-        self.delay_row.set_title("Sound delay (ms)")
-        self.delay_row.set_subtitle(f"{MATCH_MS} = matches the TV picture · 0 = no delay · "
-                                    "below 0: the TV picture waits longer, so the sound comes first")
-        self.delay_row.set_value(st.get("delay_ms", MATCH_MS))
-        self.delay_row.connect("notify::value", self._delay_changed)
-        sound.add(self.delay_row)
         box.append(sound)
 
         self.steps = [
@@ -187,8 +182,8 @@ class Window(Adw.ApplicationWindow):
 
         hint = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER,
                          label="Tip: press OK on the TV remote once for full screen. "
-                               "Pick where the sound plays under Options. The smooth-video picture is "
-                               f"{netcast.DELAY:g} s behind the laptop.")
+                               "Pick where the sound plays under Options. The smooth-video picture "
+                               f"and sound are both {netcast.DELAY:g} s behind the laptop.")
         hint.add_css_class("dim-label")
         hint.add_css_class("caption")
         box.append(hint)
@@ -362,16 +357,13 @@ class Window(Adw.ApplicationWindow):
     def _selected_sink(output):
         return output.removeprefix("sink:") if output.startswith("sink:") else None
 
-    def _delay_ms(self):
-        """How late the sound plays; below 0 it can't, so the TV picture is held back longer instead."""
-        ms = int(self.delay_row.get_value())
-        if self.server:
-            self.server.picture_delay = netcast.DELAY + max(0, -ms) / 1000
-        return ms
-
     def _route_sound(self, mode):
-        ms = self._delay_ms()
-        out, ms = (self._output(), ms) if audio.available() else ("laptop", 0)
+        # Smooth video is held exactly 2 s behind the laptop, so its sound is too. Live modes
+        # show the picture immediately and therefore cannot use the delayed sound.
+        ms = 0 if mode == "live" else MATCH_MS
+        out = self._output() if audio.available() else "laptop"
+        if not audio.available():
+            ms = 0
         self.sound_mode = mode
         if out == "bluetooth":
             self.log("Sound: no Bluetooth device is connected — it plays on the laptop")
@@ -394,29 +386,6 @@ class Window(Adw.ApplicationWindow):
             self.server.audio_device = audio.MONITOR
             self.server.audio_delay_ms = ms
 
-    def _delay_changed(self, *_):
-        ms = self._delay_ms()
-        save_settings(delay_ms=ms)
-        if self.phase != "casting" or not self.server:
-            return
-        self.log(f"Picture: TV held {self.server.picture_delay:g} s behind the laptop")
-        out = getattr(self, "sound_out", "laptop")
-        if out == "tv":
-            self.server.audio_delay_ms = ms          # the TV page picks it up and restarts the sound
-            return
-        try:
-            if self.route and self.route.delay and (ms > 0 or self._selected_sink(out)):
-                self.route.delay.set_ms(ms)
-                self.log(f"Sound: delay {ms} ms" if ms > 0 else "Sound: no extra delay")
-            elif self.route and ms <= 0 and not self._selected_sink(out):
-                self.route.stop()
-                self.route = None
-            elif not self.route and (ms > 0 or self._selected_sink(out)):
-                self.route = audio.SoundRoute(self.log)
-                self.route.start(ms, self._selected_sink(out))
-        except (OSError, audio.subprocess.SubprocessError) as e:
-            self.log(f"Sound: {e}")
-
     def _sound_back_to_laptop(self, why):
         if getattr(self, "sound_out", "laptop") != "tv":
             return
@@ -424,8 +393,13 @@ class Window(Adw.ApplicationWindow):
         self.log(f"Sound: {why} — playing it on the laptop instead")
         if self.route:
             self.route.stop()
+        self.route = None
+        try:
+            self.route = audio.SoundRoute(self.log)
+            self.route.start(MATCH_MS, None)
+        except (OSError, audio.subprocess.SubprocessError) as e:
             self.route = None
-        self._delay_changed()          # laptop speakers, with the chosen delay
+            self.log(f"Sound: {e}")
 
     def _prompted(self):
         if self.phase == "starting":
